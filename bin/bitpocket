@@ -8,6 +8,8 @@ CFG_FILE="$DOT_DIR/config"
 TMP_DIR="$DOT_DIR/tmp"
 STATE_DIR="$DOT_DIR/state"
 LOCK_DIR="$TMP_DIR/lock"  # Use a lock directory for atomic locks. See the Bash FAQ http://mywiki.wooledge.org/BashFAQ/045
+PHANTOM_DIR="$DOT_DIR/this/directory/must/not/exist" # Some calls to rsync require the use of a nonexistent path. Ugly, but unavoidable.
+
 
 # Default settings
 SLOW_SYNC_TIME=10
@@ -17,14 +19,15 @@ RSYNC_RSH="ssh"
 # Load config file
 [ -f "$CFG_FILE" ] && . "$CFG_FILE"
 
-# Test for GNU versions of core utils. Bail if non-GNU.
-sed --version >/dev/null 2>/dev/null
-if [ $? -ne 0 ]; then
-    echo "fatal: It seems like you are running non-GNU versions of coreutils."
-    echo "       It is currently unsafe to use bitpocket with this setup,"
-    echo "       so I'll have to stop here. Sorry ..."
-    exit 1
-fi
+
+# # Test for GNU versions of core utils. Bail if non-GNU.
+# sed --version >/dev/null 2>/dev/null
+# if [ $? -ne 0 ]; then
+#     echo "fatal: It seems like you are running non-GNU versions of coreutils."
+#     echo "       It is currently unsafe to use bitpocket with this setup,"
+#     echo "       so I'll have to stop here. Sorry ..."
+#     exit 1
+# fi
 
 # Decide on runner (ssh / bash -c)
 if [ -n "$REMOTE_HOST" ]; then
@@ -120,8 +123,12 @@ function sync {
   # Order of includes/excludes/filters is EXTREMELY important
   echo "# Saving current state and backing up files (if needed)"
   echo "  | Root dir: $(pwd)"   
-  rsync -av --list-only --exclude "/$DOT_DIR" $USER_RULES . | grep "^-\|^d" \
-      | sed "s:^\S*\s*\S*\s*\S*\s*\S*\s*:/:" | sed "s:^/\.::" | sort > "$STATE_DIR/tree-current"
+
+#   rsync -av --list-only --exclude "/$DOT_DIR" $USER_RULES . | grep "^-\|^d" \
+#       | sed "s:^\S*\s*\S*\s*\S*\s*\S*\s*:/:" | sed "s:^/\.::" | sort > "$STATE_DIR/tree-current"
+   rsync --dry-run --out-format=%n -i -a --exclude "/$DOT_DIR" $USER_RULES . $PHANTOM_DIR \
+       | sed "s:^:/:" | sed "s:/$::" | sed "s:^/\.$::" | sort > "$STATE_DIR/tree-current"
+
 
   # Prevent bringing back locally deleted files or removing new local files
   cp -f "$STATE_DIR/added-prev" "$TMP_DIR/fetch-exclude"
@@ -129,14 +136,32 @@ function sync {
 
   # It is difficult to only create the backup directory if needed; instead
   # we always create it, but remove it if it is empty afterwards.
-  mkdir --parents $DOT_DIR/backups/$TIMESTAMP
+  mkdir -p $DOT_DIR/backups/$TIMESTAMP
 
+  touch $DOT_DIR/backups/$TIMESTAMP/dummy
   # Determine what will be fetched from server and make backup 
   # copies of any local files to be deleted or overwritten.
   # Order of includes/excludes/filters is EXTREMELY important
+
+  echo "============================"
+
+  rsync --dry-run \
+        -auvzxi --delete $RSYNC_OPTS --exclude "/$DOT_DIR" --exclude-from "$TMP_DIR/fetch-exclude" $USER_RULES $REMOTE/ . 
+
+  echo "============================"
+  
   rsync --dry-run \
         -auvzxi --delete $RSYNC_OPTS --exclude "/$DOT_DIR" --exclude-from "$TMP_DIR/fetch-exclude" $USER_RULES $REMOTE/ . \
-      | grep "^[ch<>\.\*][f]\|\*deleting" | sed "s:^\S*\s*::" | sed "s:\(.*\):if [ -f \"\1\" ]; then cp --parents \"\1\" $DOT_DIR/backups/$TIMESTAMP; fi:" | sh || die "BACKUP"
+      | grep "^[ch<>\.\*][f]\|\*deleting" | sed "s:..........::" | sed "s:\(.*\):if [ -f \"\1\" ]; then cp --parents \"\1\" $DOT_DIR/backups/$TIMESTAMP; fi:" 
+
+  echo "============================"
+
+  rsync --dry-run \
+        -auvzxi --delete $RSYNC_OPTS --exclude "/$DOT_DIR" --exclude-from "$TMP_DIR/fetch-exclude" $USER_RULES $REMOTE/ . \
+      | grep "^[ch<>\.\*][f]\|\*deleting" | sed "s:^\S*\s*::" | sed "s:\(.*\):if [ -f \"\1\" ]; then cp --parents \"\1\" $DOT_DIR/backups/$TIMESTAMP; fi:" 
+
+  echo "============================"
+  #| sh || die "BACKUP"
   [ "$(ls -A $DOT_DIR/backups/$TIMESTAMP)" ] && echo "  | Some files were backed up to $DOT_DIR/backups/$TIMESTAMP"
   [ "$(ls -A $DOT_DIR/backups/$TIMESTAMP)" ] || rmdir $DOT_DIR/backups/$TIMESTAMP
 
